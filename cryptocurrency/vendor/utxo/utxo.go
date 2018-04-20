@@ -144,6 +144,7 @@ func GetCreatorId(stub shim.ChaincodeStubInterface )([]byte, error){
 	return nil, nil;
 }
 
+//获取交易对应的Id，实际上我们可以看到，所谓交易的id 就是Tx的hash值
 func GetTxId(tx *Tx) []byte {
 	sh256 := sha256.New()
 	txData,_ := json.Marshal(tx);
@@ -151,6 +152,14 @@ func GetTxId(tx *Tx) []byte {
 	return sh256.Sum(nil);
 }
 
+//构造创世交易
+/*
+	@param:
+		output: 这个地址一定要填入执行初始化操作的creator对应的output，否则会操作失败
+		 Fee: 初始代币总量，目前不支持增发功能
+	@return：
+		Tx：创世交易; error：错误信息
+*/
 func MakeGenesisTx(output []byte, Fee float64) (Tx, error ){
 	if Fee < 0 || output == nil{
 		return Tx{}, fmt.Errorf("the paraments are not vaild");
@@ -159,6 +168,15 @@ func MakeGenesisTx(output []byte, Fee float64) (Tx, error ){
 	return Tx{Inputs:[][]byte{[]byte(CoinBase)}, Output:output,  Fee:Fee}, nil;
 }
 
+//构造Utxo
+/*
+	@param:
+		output: 这个地址一定要填入收款人的地址，你可以转账给自己，但那么做没有意义，虽然不收手续费;
+		outPutFee: 转出的金额;
+		inputTxs: 作为输入的utxo，本地无法独立对其是否真的为utxo进行校验，但是智能合约里会校验;
+	@return：
+		Tx：转账交易; error：错误信息
+*/
 func MakeUtxo(output []byte, outputFee float64, inputTxs []Tx) (Tx, float64, error) {
 	var sum float64 = 0;
 
@@ -218,7 +236,7 @@ func InitTxCompositeKey(stub shim.ChaincodeStubInterface, output []byte, txId []
 	return nil;
 }
 
-//把花费状态置为0x00，用来表示已经花费了的状态
+//把花费状态置为0x01，用来表示已经花费了的状态
 /*
 @param:
 	stub: 略
