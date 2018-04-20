@@ -74,31 +74,36 @@ func CheckInputTxs(stub shim.ChaincodeStubInterface, tx *Tx) (*Tx, error){
 
 	for _, inputTxId := range tx.Inputs{
 		inputTxKey := string(inputTxId[:]);
-		inputTxValue, err := stub.GetState(inputTxKey);
 
-		if err != nil{
-			return nil, fmt.Errorf("the input tx is not exist: %s ", inputTxKey);
-		}
-
-		inputTx := Tx{};
-		json.Unmarshal(inputTxValue, &inputTx);
-
-		if err = CheckOwner(stub, &inputTx); err != nil{
+		if inputTxValue, err := stub.GetState(inputTxKey); err != nil{
 			return nil, err;
-		}
 
-
-		if  Unspent, err := CheckTxUnSpentState(stub, inputTx.Output, GetTxId(&inputTx)); err == nil && Unspent{
-			//累积输入的金额;
-			sum+= inputTx.Fee;
 		}else {
-			if err != nil{
-				return nil, err;
-			}else {
-				return nil, fmt.Errorf("sorry, this input %s is not utxo", inputTxKey);
+			if inputTxValue == nil{
+				return nil, fmt.Errorf("the input tx is not exist: %s ", inputTxKey);
 			}
 
+			inputTx := Tx{};
+			json.Unmarshal(inputTxValue, &inputTx);
+
+			if err = CheckOwner(stub, &inputTx); err != nil{
+				return nil, err;
+			}
+
+
+			if  Unspent, err := CheckTxUnSpentState(stub, inputTx.Output, GetTxId(&inputTx)); err == nil && Unspent{
+				//累积输入的金额;
+				sum+= inputTx.Fee;
+			}else {
+				if err != nil{
+					return nil, err;
+				}else {
+					return nil, fmt.Errorf("sorry, this input %s had been spent, ", inputTxKey);
+				}
+			}
 		}
+
+
 
 	}
 

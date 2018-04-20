@@ -24,40 +24,40 @@ type CryptoCurrency struct {
 	错误信息 or 交易id的队列
 */
 func (c *CryptoCurrency) splitCompositeKeyQuery(stub shim.ChaincodeStubInterface, output []byte, code []byte) pb.Response {
-	outputBase64 := base64.StdEncoding.EncodeToString(output);
-	txResultsIterator, err := stub.GetStateByPartialCompositeKey(utxo.IndexName, []string{outputBase64});
-
-	if err != nil{
-		return shim.Error(err.Error());
-	}
-
 	var txResult = [][]byte{};
-	for txResultsIterator.HasNext(){
-		response , err := txResultsIterator.Next();
-		if err != nil{
-			break;
-		}
-		if response.Value == nil{
-			return shim.Error(fmt.Sprintf("the value of key %s is not exist.", response.Key));
-		}
-		if (response.Value[0]&code[0]) != 0x00{
-			indexType, compositeKeyParts, err := stub.SplitCompositeKey(response.Key);
-			if err != nil{
-				break;
-			}
-			fmt.Printf("- found a tx from index:%s output:%s id:%s\n", indexType, compositeKeyParts[0], compositeKeyParts[1]);
+	outputBase64 := base64.StdEncoding.EncodeToString(output);
 
-			lastIndex := len(txResult);
-			txTemp:= make([][]byte,  lastIndex + 1);
-			copy(txTemp, txResult);
-			txTemp[lastIndex], _ = base64.StdEncoding.DecodeString(compositeKeyParts[1]);
-			txResult = txTemp;
-		}
-	}
-
-	txResultsIterator.Close();
-	if err != nil{
+	if txResultsIterator, err := stub.GetStateByPartialCompositeKey(utxo.IndexName, []string{outputBase64}); err != nil{
 		return shim.Error(err.Error());
+	}else {
+
+		for txResultsIterator.HasNext(){
+			if response , err := txResultsIterator.Next(); err != nil{
+				break;
+			}else {
+				if response.Value == nil{
+					return shim.Error(fmt.Sprintf("the value of key %s is not exist.", response.Key));
+				}
+				if (response.Value[0]&code[0]) != 0x00{
+					indexType, compositeKeyParts, err := stub.SplitCompositeKey(response.Key);
+					if err != nil{
+						break;
+					}
+					fmt.Printf("- found a tx from index:%s output:%s id:%s\n", indexType, compositeKeyParts[0], compositeKeyParts[1]);
+
+					lastIndex := len(txResult);
+					txTemp:= make([][]byte,  lastIndex + 1);
+					copy(txTemp, txResult);
+					txTemp[lastIndex], _ = base64.StdEncoding.DecodeString(compositeKeyParts[1]);
+					txResult = txTemp;
+				}
+			}
+		}
+
+		txResultsIterator.Close();
+		if err != nil{
+			return shim.Error(err.Error());
+		}
 	}
 
 	result,_ := json.Marshal(&utxo.TxIdList{txResult});
@@ -87,16 +87,14 @@ func (c *CryptoCurrency) query(stub shim.ChaincodeStubInterface, args [][]byte) 
 			}
 
 			txKey := string(args[2]);
-			txValue, err := stub.GetState(txKey);
-			if err != nil{
+			if txValue, err := stub.GetState(txKey); err != nil{
 				return shim.Error(err.Error());
+			}else {
+				if txValue == nil{
+					return shim.Error(fmt.Sprintf("the value of key %s is not exist: %s", txKey));
+				}
+				return shim.Success(txValue);
 			}
-
-			if txValue == nil{
-				return shim.Error(fmt.Sprintf("the value of key %s is not exist: %s", txKey));
-			}
-
-			return shim.Success(txValue);
 		}
 	case utxo.QueryUnspent:{
 			output, err := utxo.GetCreatorId(stub);
@@ -104,7 +102,6 @@ func (c *CryptoCurrency) query(stub shim.ChaincodeStubInterface, args [][]byte) 
 				return shim.Error(err.Error());
 			}
 			return c.splitCompositeKeyQuery(stub, output[:], []byte{0x01});
-
 		}
 
 	case utxo.QuerySpent:{
@@ -113,7 +110,6 @@ func (c *CryptoCurrency) query(stub shim.ChaincodeStubInterface, args [][]byte) 
 				return shim.Error(err.Error());
 			}
 			return c.splitCompositeKeyQuery(stub, output[:], []byte{0x10});
-
 		}
 	case utxo.QueryAll:{
 			output, err := utxo.GetCreatorId(stub);
@@ -139,62 +135,63 @@ func (c *CryptoCurrency) query(stub shim.ChaincodeStubInterface, args [][]byte) 
 	错误信息 or 找零 utxo
 */
 func (c *CryptoCurrency) spend(stub shim.ChaincodeStubInterface, args [][]byte) pb.Response{
+	var respondPayload []byte = nil;
 	if len(args) < 2{
 		return shim.Error("none tx is spent");
 	}
 
 	tx := utxo.Tx{};
-	err := json.Unmarshal(args[1], &tx);
-	if err != nil{
+	if err := json.Unmarshal(args[1], &tx); err != nil{
 		return shim.Error(err.Error());
 	}
 
 	//检查输入的Tx
-	balanceTx, err := utxo.CheckInputTxs(stub, &tx);
-	if err != nil{
+	if balanceTx, err := utxo.CheckInputTxs(stub, &tx); err != nil{
 		return shim.Error(err.Error());
-	}
+	}else {
+		output,_ := utxo.GetCreatorId(stub);
+		//修改InputTxs的状态为已经花费;
+		//此处用来抗双花;
+		for _, inputTxId := range tx.Inputs{
+			//修改composite key的state为spent;
+			if err = utxo.SpentCompositeKey(stub, output, inputTxId); err != nil{
+				return shim.Error(err.Error());
+			}
+		}
 
-	output,_ := utxo.GetCreatorId(stub);
-	//修改InputTxs的状态为已经花费;
-	//此处用来抗双花;
-	for _, inputTxId := range tx.Inputs{
-		//修改composite key的state为spent;
-		if err = utxo.SpentCompositeKey(stub, output, inputTxId); err != nil{
+		//写入新utxo
+		utxoKey := utxo.GetTxId(&tx);
+		utxoValue,_ := json.Marshal(&tx);
+		if err = stub.PutState(string(utxoKey), utxoValue); err != nil{
 			return shim.Error(err.Error());
 		}
+
+		//初始化utxo composite key
+		if err = utxo.InitTxCompositeKey(stub, tx.Output, utxoKey); err != nil{
+			return shim.Error(err.Error());
+		}
+
+		//写入找零交易
+		if balanceTx == nil{
+			return shim.Success(nil);
+		}
+
+		balanceTxKey := utxo.GetTxId(balanceTx);
+		balanceTxValue,_ := json.Marshal(balanceTx);
+
+		if err = stub.PutState(string(balanceTxKey), balanceTxValue); err != nil{
+			shim.Error(err.Error());
+		}
+
+		//初始化balance composite key
+		if err = utxo.InitTxCompositeKey(stub,  balanceTx.Output, balanceTxKey); err != nil{
+			return shim.Error(err.Error());
+		}
+
+		respondPayload = balanceTxValue;
 	}
 
-	//写入新utxo
-	utxoKey := utxo.GetTxId(&tx);
-	utxoValue,_ := json.Marshal(&tx);
-	if err = stub.PutState(string(utxoKey), utxoValue); err != nil{
-		return shim.Error(err.Error());
-	}
-
-	//初始化utxo composite key
-	if err = utxo.InitTxCompositeKey(stub, tx.Output, utxoKey); err != nil{
-		return shim.Error(err.Error());
-	}
-
-	//写入找零交易
-	if balanceTx == nil{
-		return shim.Success(nil);
-	}
-
-	balanceTxKey := utxo.GetTxId(balanceTx);
-	balanceTxValue,_ := json.Marshal(balanceTx);
-
-	if err = stub.PutState(string(balanceTxKey), balanceTxValue); err != nil{
-		shim.Error(err.Error());
-	}
-
-	//初始化balance composite key
-	if err = utxo.InitTxCompositeKey(stub,  balanceTx.Output, balanceTxKey); err != nil{
-		return shim.Error(err.Error());
-	}
-
-	return shim.Success(balanceTxValue);
+	return shim.Success(respondPayload);
 }
 
 //初始化发行代币的总量
@@ -208,8 +205,7 @@ func (c *CryptoCurrency) Init(stub shim.ChaincodeStubInterface) pb.Response {
 	}
 
 	genesisTx := utxo.Tx{};
-	err = json.Unmarshal(args[0],&genesisTx);
-	if err != nil {
+	if err = json.Unmarshal(args[0],&genesisTx); err != nil {
 		return shim.Error(err.Error());
 	}
 
@@ -218,19 +214,20 @@ func (c *CryptoCurrency) Init(stub shim.ChaincodeStubInterface) pb.Response {
 		return shim.Error(err.Error());
 	}
 
-
 	if genesisTx.Fee <= 0 {
 		return shim.Error("genesis tx fee is not valide");
 	}
 
 	//写入创世交易;
 	genesisTxId := utxo.GetTxId(&genesisTx);
-	err = stub.PutState(string(genesisTxId), args[0]);
-	if err != nil {
+
+	if err = stub.PutState(string(genesisTxId), args[0]); err != nil {
 		return shim.Error(err.Error())
 	}
 	//初始化composite key，用于复杂查询;
-	err = utxo.InitTxCompositeKey(stub, genesisTx.Output , genesisTxId);
+	if err = utxo.InitTxCompositeKey(stub, genesisTx.Output , genesisTxId); err != nil{
+		return shim.Error(err.Error());
+	}
 
 	fmt.Printf("the genesis coin number: %f and Tx id : %s", genesisTx.Fee, string(genesisTxId));
 	return shim.Success(nil)
